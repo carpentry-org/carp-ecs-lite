@@ -1,0 +1,53 @@
+(load "../src/ecs.carp")
+(load "../../carp-sparseset/sparse_set.carp")
+
+(use ECS)
+
+(deftype Position [x Float y Float])
+(defmodule Position
+  (defn zero [] (Position.init 0.0f 0.0f))
+  (implements zero Position.zero)
+  (defn str [p] (str* "Pos(" (Float.str @(Position.x p)) ", " (Float.str @(Position.y p)) ")"))
+  (implements str Position.str)
+)
+
+(deftype Velocity [dx Float dy Float])
+(defmodule Velocity
+  (defn zero [] (Velocity.init 0.0f 0.0f))
+  (implements zero Velocity.zero)
+)
+
+;; The Big Moment!
+(ECS.defworld GameWorld Position Velocity)
+
+(defn main []
+  (let [world (GameWorld.new)
+        e1 (GameWorld.create-entity! &world)
+        e2 (GameWorld.create-entity! &world)]
+    (do
+      (IO.println "Full defworld test...")
+      
+      (ECS.add-component! &world &e1 (Position.init 10.0f 20.0f))
+      (ECS.add-component! &world &e1 (Velocity.init 1.0f 1.0f))
+      (ECS.add-component! &world &e2 (Position.init 100.0f 200.0f))
+
+      (match (the (Maybe Position) (ECS.get-component &world &e1))
+        (Maybe.Just p) (IO.println &(str* "E1 Position: " (str &p)))
+        (Maybe.Nothing) (IO.println "E1 Position not found!"))
+
+      (IO.println "Starting movement system...")
+      (ECS.query &world [e Position Velocity]
+        (let [pos (Maybe.unsafe-from (ECS.get-component &world &e))
+              vel (Maybe.unsafe-from (ECS.get-component &world &e))]
+          (do
+            (IO.println &(str* "Moving entity " (str &e)))
+            (ECS.add-component! &world &e (Position.init (+ @(Position.x &pos) @(Velocity.dx &vel))
+                                                        (+ @(Position.y &pos) @(Velocity.dy &vel)))))))
+      
+      (let [p1 (Maybe.unsafe-from (the (Maybe Position) (ECS.get-component &world &e1)))]
+        (do
+          (IO.println &(str* "E1 pos after move: " (str &p1)))
+          (assert (= @(Position.x &p1) 11.0f))))
+
+      (IO.println "ECS defworld test passed!")
+      0)))

@@ -1,0 +1,28 @@
+(load "../src/ecs.carp")
+
+(use ECS)
+(use Registry)
+(use Entity)
+
+(defn main []
+  (let [reg (Registry.new)]
+    (do
+      (let [e1 (Registry.create! &reg)
+            e2 (Registry.create! &reg)]
+        (do
+          (IO.println &(str* "E1: " (str (Entity.handle &e1))))
+          (IO.println &(str* "E2: " (str (Entity.handle &e2))))
+          (assert (Registry.valid? &reg &e1))
+          (assert (Registry.valid? &reg &e2))
+          
+          (Registry.destroy! &reg &e1)
+          (assert (not (Registry.valid? &reg &e1)))
+          
+          (let [e3 (Registry.create! &reg)]
+            (do
+              (IO.println &(str* "E3: " (str (Entity.handle &e3))))
+              (assert (= (Entity.index &e3) (Entity.index &e1)))
+              (assert (not (= (Entity.generation &e3) (Entity.generation &e1))))
+              (assert (Registry.valid? &reg &e3))))))
+      (IO.println "ECS Registry tests passed!")
+      0)))

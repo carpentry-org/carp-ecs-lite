@@ -1,0 +1,149 @@
+(load "../../carp-handle/handle.carp")
+
+(load "../../carp-sparseset/sparse_set.carp")
+
+(use Handle)
+(use SparseSet)
+(use Uint32)
+(use Uint64)
+
+;; Ensure inc/dec for Uint32 are available
+(defmodule Uint32
+  (defn inc [x] (+ x (Uint32.from-long 1l)))
+  (defn dec [x] (- x (Uint32.from-long 1l)))
+  (implements inc Uint32.inc)
+  (implements dec Uint32.dec)
+)
+
+(defprotocol (HasComponent w c)
+  [(get-storage (Fn [(Ref w q)] (Ref (SparseSet c) q)))])
+
+(deftype ECSRegistry [
+  generations (Array Uint32)
+  free-indices (Array Int)
+  count Int
+])
+
+(defmodule ECS
+  (deftype Entity [handle (Handle ())])
+  
+  (defmodule Entity
+    (defn index [e] (Handle.index (ECS.Entity.handle e)))
+    (defn generation [e] (Handle.generation (ECS.Entity.handle e)))
+    (defn id [e] (Uint32.from-long (Uint64.to-long (Handle.index (ECS.Entity.handle e)))))
+
+    (defn null [] (ECS.Entity.init (Handle.null)))
+    (defn null? [e] (Handle.null? (ECS.Entity.handle e)))
+
+    (defn str [e] (str (ECS.Entity.handle e)))
+    (implements str ECS.Entity.str)
+  )
+
+  (defmodule Registry
+    (defn new []
+      (ECSRegistry.init [] [] 0))
+
+    (defn create! [r]
+      (if (Array.empty? (ECSRegistry.free-indices r))
+        (let [idx @(ECSRegistry.count r)
+              gen (Uint32.from-long 1l)
+              h (Handle.init (Uint64.from-long (Long.from-int idx)) gen)]
+          (do
+            (Array.push-back! (ECSRegistry.generations r) gen)
+            (ECSRegistry.set-count! r (Int.inc idx))
+            (ECS.Entity.init h)))
+        (let [idx (Array.pop-back! (ECSRegistry.free-indices r))
+              gen (Uint32.inc @(Array.unsafe-nth (ECSRegistry.generations r) idx))
+              h (Handle.init (Uint64.from-long (Long.from-int idx)) gen)]
+          (do
+            (Array.aset! (ECSRegistry.generations r) idx gen)
+            (ECS.Entity.init h)))))
+
+    (defn valid? [r ent]
+      (let [idx (Long.to-int (Uint64.to-long (ECS.Entity.index ent)))
+            gen (ECS.Entity.generation ent)]
+        (if (or (< idx 0) (>= idx (Array.length (ECSRegistry.generations r))))
+          false
+          (Uint32.= gen @(Array.unsafe-nth (ECSRegistry.generations r) idx)))))
+
+    (defn destroy! [r ent]
+      (when (ECS.Registry.valid? r ent)
+        (let [idx (Long.to-int (Uint64.to-long (ECS.Entity.index ent)))]
+          (do
+            ;; Increment generation to invalidate existing handles
+            (Array.aset! (ECSRegistry.generations r) idx (Uint32.inc @(Array.unsafe-nth (ECSRegistry.generations r) idx)))
+            (Array.push-back! (ECSRegistry.free-indices r) idx)))))
+  )
+
+  (defn add-component! [w ent val]
+    (SparseSet.insert! (get-storage w) (ECS.Entity.id ent) val))
+
+  (defn get-component [w ent]
+    (SparseSet.get (get-storage w) (ECS.Entity.id ent)))
+
+  (defn has-component? [w ent]
+    (SparseSet.contains? (get-storage w) (ECS.Entity.id ent)))
+
+  (defmacro register-component [world component storage-field]
+    (list 'impl-for (list world component) 'HasComponent
+      (list 'defn 'get-storage ['w] (list storage-field 'w))))
+
+  (defndynamic flatten-components [cs]
+    (if (= (length cs) 0)
+      '()
+      (cons (Symbol.from (Dynamic.String.concat [(str (car cs)) "-storage"]))
+        (cons (list 'SparseSet (car cs))
+          (flatten-components (cdr cs))))))
+
+  (defndynamic map-components-to-inits [cs]
+    (if (= (length cs) 0)
+      '()
+      (cons '(SparseSet.new) (map-components-to-inits (cdr cs)))))
+
+  (defndynamic map-components-to-registrations [world-name components]
+    (if (= (length components) 0)
+      '()
+      (let [comp (car components)
+            field-name (Symbol.from (Dynamic.String.concat [(str comp) "-storage"]))]
+        (cons (list 'ECS.register-component world-name comp field-name)
+          (map-components-to-registrations world-name (cdr components))))))
+
+  (defmacro defworld [name :rest components]
+    (let [fields (cons 'registry (cons 'ECSRegistry (flatten-components components)))
+          field-array (list-to-array-internal fields [])
+          init-fn 'init
+          component-inits (map-components-to-inits components)
+          registrations (map-components-to-registrations name components)]
+      (list 'do
+        (list 'deftype name field-array)
+        (list 'defmodule name
+          (list 'defn 'new []
+            (cons init-fn (cons '(ECS.Registry.new) component-inits)))
+          (list 'defn 'create-entity! ['w]
+            '(ECS.Registry.create! (registry w)))
+          (list 'defn 'destroy-entity! ['w 'ent]
+            (cons 'do
+              (append (map (fn [c] (list 'SparseSet.remove! (list (Symbol.from (Dynamic.String.concat [(str c) "-storage"])) 'w) '(ECS.Entity.id ent))) components)
+                      '((ECS.Registry.destroy! (registry w) ent))))))
+        (cons 'do registrations))))
+
+  (defndynamic map-components-to-checks [component-storages body]
+    (if (= (length component-storages) 0)
+      body
+      (list 'when (list 'SparseSet.contains? (car component-storages) 'id)
+        (map-components-to-checks (cdr component-storages) body))))
+
+  (defmacro query [world bindings :rest body]
+    (let [ent-binding (car bindings)
+          component-types (cdr bindings)
+          first-comp (car component-types)
+          other-comps (cdr component-types)
+          other-storages (map (fn [ct] (list 'the (list 'Ref (list 'SparseSet ct)) (list 'get-storage world))) other-comps)
+          inner-body (list 'let (array ent-binding (list 'ECS.Entity.init (list 'Handle.init (list 'Uint64.from-long (list 'Uint32.to-long 'id)) '(Uint32.from-long 0l))))
+                       (cons 'do body))
+          checks (map-components-to-checks other-storages inner-body)]
+      (list 'let (array 'storage1 (list 'the (list 'Ref (list 'SparseSet first-comp)) (list 'get-storage world)))
+        (list 'for (array 'i 0 (list 'SparseSet.length 'storage1))
+          (list 'let (array 'id (list 'Maybe.unsafe-from (list 'SparseSet.id-at-idx 'storage1 'i)))
+            checks)))))
+)
