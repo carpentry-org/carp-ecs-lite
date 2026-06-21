@@ -1,5 +1,4 @@
 (load "../../carp-handle/handle.carp")
-
 (load "../../carp-sparseset/sparse_set.carp")
 
 (use Handle)
@@ -14,9 +13,6 @@
   (implements inc Uint32.inc)
   (implements dec Uint32.dec)
 )
-
-(defprotocol (HasComponent w c)
-  [(get-storage (Fn [(Ref w q)] (Ref (SparseSet c) q)))])
 
 (deftype ECSRegistry [
   generations (Array Uint32)
@@ -81,8 +77,15 @@
   (defn get-component [w ent]
     (SparseSet.get (get-storage w) (ECS.Entity.id ent)))
 
-  (defn has-component? [w ent]
-    (SparseSet.contains? (get-storage w) (ECS.Entity.id ent)))
+  (defn get-component-ptr [w ent]
+    (SparseSet.get-ptr (get-storage w) (ECS.Entity.id ent)))
+
+  (deftemplate ptr->ref (Fn [(Ptr a), (Ref b q)] (Ref a q))
+    "void* $NAME(void* p, void* unused)"
+    "$DECL { return p; }")
+
+  (defmacro has-component? [world ent comp-type]
+    (list 'SparseSet.contains? (list 'the (list 'Ref (list 'SparseSet comp-type)) (list 'get-storage world)) (list 'ECS.Entity.id ent)))
 
   (defmacro register-component [world component storage-field]
     (list 'impl-for (list world component) 'HasComponent
@@ -93,27 +96,28 @@
       '()
       (cons (Symbol.from (Dynamic.String.concat [(str (car cs)) "-storage"]))
         (cons (list 'SparseSet (car cs))
-          (flatten-components (cdr cs))))))
+          (ECS.flatten-components (cdr cs))))))
 
   (defndynamic map-components-to-inits [cs]
     (if (= (length cs) 0)
       '()
-      (cons '(SparseSet.new) (map-components-to-inits (cdr cs)))))
+      (cons '(SparseSet.new) (ECS.map-components-to-inits (cdr cs)))))
 
-  (defndynamic map-components-to-registrations [world-name components]
+  (defndynamic map-components-to-impls [world-name components]
     (if (= (length components) 0)
       '()
       (let [comp (car components)
             field-name (Symbol.from (Dynamic.String.concat [(str comp) "-storage"]))]
-        (cons (list 'ECS.register-component world-name comp field-name)
-          (map-components-to-registrations world-name (cdr components))))))
+        (cons (list 'impl-for (list world-name comp) 'HasComponent
+                (list 'defn 'get-storage ['w] (list field-name 'w)))
+          (ECS.map-components-to-impls world-name (cdr components))))))
 
   (defmacro defworld [name :rest components]
-    (let [fields (cons 'registry (cons 'ECSRegistry (flatten-components components)))
+    (let [fields (cons 'registry (cons 'ECSRegistry (ECS.flatten-components components)))
           field-array (list-to-array-internal fields [])
           init-fn 'init
-          component-inits (map-components-to-inits components)
-          registrations (map-components-to-registrations name components)]
+          component-inits (ECS.map-components-to-inits components)
+          impls (ECS.map-components-to-impls name components)]
       (list 'do
         (list 'deftype name field-array)
         (list 'defmodule name
@@ -125,25 +129,57 @@
             (cons 'do
               (append (map (fn [c] (list 'SparseSet.remove! (list (Symbol.from (Dynamic.String.concat [(str c) "-storage"])) 'w) '(ECS.Entity.id ent))) components)
                       '((ECS.Registry.destroy! (registry w) ent))))))
-        (cons 'do registrations))))
+        (cons 'do impls))))
 
   (defndynamic map-components-to-checks [component-storages body]
     (if (= (length component-storages) 0)
       body
       (list 'when (list 'SparseSet.contains? (car component-storages) 'id)
-        (map-components-to-checks (cdr component-storages) body))))
+        (ECS.map-components-to-checks (cdr component-storages) body))))
+
+  (defndynamic extract-types [comp-bindings]
+    (if (= (length comp-bindings) 0)
+      '()
+      (cons (cadr (car comp-bindings)) (ECS.extract-types (cdr comp-bindings)))))
+
+  (defndynamic generate-query-bindings [world-sym ent-sym comp-bindings body]
+    (if (= (length comp-bindings) 0)
+      (cons 'do body)
+      (let [cb (car comp-bindings)
+            vname (car cb)
+            ctype (cadr cb)]
+        (list 'let (array vname (list 'the (list 'Ref ctype) (list 'ECS.ptr->ref (list 'Maybe.unsafe-from (list 'ECS.get-component-ptr world-sym (list 'ref ent-sym))) world-sym)))
+          (ECS.generate-query-bindings world-sym ent-sym (cdr comp-bindings) body)))))
 
   (defmacro query [world bindings :rest body]
     (let [ent-binding (car bindings)
-          component-types (cdr bindings)
+          comp-bindings (cdr bindings)
+          component-types (ECS.extract-types comp-bindings)
           first-comp (car component-types)
           other-comps (cdr component-types)
           other-storages (map (fn [ct] (list 'the (list 'Ref (list 'SparseSet ct)) (list 'get-storage world))) other-comps)
-          inner-body (list 'let (array ent-binding (list 'ECS.Entity.init (list 'Handle.init (list 'Uint64.from-long (list 'Uint32.to-long 'id)) '(Uint32.from-long 0l))))
-                       (cons 'do body))
-          checks (map-components-to-checks other-storages inner-body)]
+          inner-body (ECS.generate-query-bindings world ent-binding comp-bindings body)
+          inner-let (list 'let (array ent-binding (list 'ECS.Entity.init (list 'Handle.init (list 'Uint64.from-long (list 'Uint32.to-long 'id)) '(Uint32.from-long 0l))))
+                       inner-body)
+          checks (ECS.map-components-to-checks other-storages inner-let)]
       (list 'let (array 'storage1 (list 'the (list 'Ref (list 'SparseSet first-comp)) (list 'get-storage world)))
         (list 'for (array 'i 0 (list 'SparseSet.length 'storage1))
           (list 'let (array 'id (list 'Maybe.unsafe-from (list 'SparseSet.id-at-idx 'storage1 'i)))
             checks)))))
+
+  (defndynamic map-components-to-existence-checks [world entity storages body]
+    (if (= (length storages) 0)
+      body
+      (list 'when (list 'SparseSet.contains? (car storages) (list 'ECS.Entity.id (list 'ref entity)))
+        (ECS.map-components-to-existence-checks world entity (cdr storages) body))))
+
+  (defmacro with-components [world entity bindings :rest body]
+    (let [ent-binding (car bindings)
+          comp-bindings (cdr bindings)
+          component-types (ECS.extract-types comp-bindings)
+          storages (map (fn [ct] (list 'the (list 'Ref (list 'SparseSet ct)) (list 'get-storage world))) component-types)
+          inner-body (ECS.generate-query-bindings world ent-binding comp-bindings body)
+          checks (ECS.map-components-to-existence-checks world ent-binding storages inner-body)]
+      (list 'let (array ent-binding entity)
+        checks)))
 )
