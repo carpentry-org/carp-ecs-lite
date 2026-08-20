@@ -35,14 +35,11 @@
         (Maybe.Just p) (IO.println &(str* "E1 Position: " (str &p)))
         (Maybe.Nothing) (IO.println "E1 Position not found!"))
 
-      (IO.println "Starting movement system...")
-      (ECS.query &world [e Position Velocity]
-        (let [pos (Maybe.unsafe-from (ECS.get-component &world &e))
-              vel (Maybe.unsafe-from (ECS.get-component &world &e))]
-          (do
-            (IO.println &(str* "Moving entity " (str &e)))
-            (ECS.add-component! &world &e (Position.init (+ @(Position.x &pos) @(Velocity.dx &vel))
-                                                        (+ @(Position.y &pos) @(Velocity.dy &vel)))))))
+      (ECS.query &world (e (pos Position) (vel Velocity))
+        (do
+          (IO.println &(str* "Moving entity " (str &e)))
+          (ECS.add-component! &world &e (Position.init (+ @(Position.x pos) @(Velocity.dx vel))
+                                                      (+ @(Position.y pos) @(Velocity.dy vel))))))
       
       (let [p1 (Maybe.unsafe-from (the (Maybe Position) (ECS.get-component &world &e1)))]
         (do

@@ -14,6 +14,9 @@
   (implements dec Uint32.dec)
 )
 
+(defprotocol (HasComponent w c)
+  [(get-storage (Fn [(Ref w q)] (Ref (SparseSet c) q)))])
+
 (deftype ECSRegistry [
   generations (Array Uint32)
   free-indices (Array Int)
