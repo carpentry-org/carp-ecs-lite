@@ -56,6 +56,10 @@ Built on top of `carp-sparseset` and `carp-handle`, and leveraging the powerful 
       0)))
 ```
 
+## Examples
+
+See [examples.md](examples.md) for usage examples.
+
 ## License
 
 MIT
