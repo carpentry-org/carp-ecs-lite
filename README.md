@@ -2,7 +2,14 @@
 
 A lightweight, modular Entity Component System (ECS) for the [Carp language](https://github.com/carp-lang/Carp).
 
-Built on top of `carp-sparseset` and `carp-handle`, and leveraging the powerful `defprotocol` feature for a truly type-safe and generic API.
+Built on top of the `SparseSet` and `Handle` modules from
+[carp-collections](https://github.com/carpentry-org/carp-collections).
+
+> **Status: does not build.** The API is written against `defprotocol` and
+> `impl-for`, which are not forms carp has. Loading `src/ecs.carp` stops at
+> `Can't find symbol 'defprotocol'` before anything else is checked, so both
+> test suites are unrunnable. This needs a port onto interfaces (or the
+> feature needs to land in the compiler) before the library is usable.
 
 ## Features
 
